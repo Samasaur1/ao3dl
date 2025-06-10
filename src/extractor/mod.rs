@@ -22,11 +22,6 @@ impl std::error::Error for Error {}
 pub fn as_zip(bytes: bytes::Bytes) -> Result<ZipArchive<impl std::io::Read + std::io::Seek>, Box<dyn std::error::Error>> {
     let wrapped = std::io::Cursor::new(bytes);
     let zip = zip::ZipArchive::new(wrapped)?;
-
-    zip.file_names().for_each(|f| {
-        println!("zip has file {}", f);
-    });
-
     Ok(zip)
 }
 

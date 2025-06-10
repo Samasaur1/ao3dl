@@ -1,7 +1,7 @@
 use core::time;
 
 use anyhow::bail;
-use reqwest::{multipart, Client, Request, RequestBuilder, Response, StatusCode};
+use reqwest::{multipart, Client, Request, Response, StatusCode};
 
 mod types;
 
@@ -10,14 +10,14 @@ static AO3DL_USER_AGENT: &'static str = "ao3dl/0.1.0";
 static AUTHENTICITY_TOKEN_URL: &'static str = "https://archiveofourown.org/token_dispenser.json";
 static LOGIN_URL: &'static str = "https://archiveofourown.org/users/login";
 
-async fn execute_with_retries(client: &Client, req: Request) -> anyhow::Result<Response> {
+async fn execute_with_retries(client: &Client, req: impl Fn() -> anyhow::Result<Request>) -> anyhow::Result<Response> {
     const DELAY_SCALING_FACTOR: f64 = 1.25;
     const DELAY_BASE: f64 = 1.0;
     let mut exponential_delay = DELAY_BASE;
 
     loop {
         println!("attempting request");
-        let possible_response = client.execute(req.try_clone().unwrap())
+        let possible_response = client.execute(req()?)
             .await;
 
         match possible_response {
@@ -62,12 +62,10 @@ async fn execute_with_retries(client: &Client, req: Request) -> anyhow::Result<R
 }
 
 async fn get_authenticity_token(client: &Client) -> anyhow::Result<String> {
-    let req = client.get(AUTHENTICITY_TOKEN_URL)
-        .build()?;
-
-    println!("attempting to fetch token");
-
-    let token = execute_with_retries(client, req)
+    let token = execute_with_retries(client, || {
+        let req = client.get(AUTHENTICITY_TOKEN_URL).build()?;
+        Ok(req)
+    })
         .await?
         .json::<types::AuthenticityToken>()
         .await?
@@ -89,18 +87,19 @@ pub async fn login(client: &Client, username: &str, password: &str) -> anyhow::R
 
     println!("got token {}", token);
 
-    let form = multipart::Form::new()
-        .text("user[login]", user)
-        .text("user[password]", pass)
-        .text("user[remember_me]", 1.to_string())
-        .text("authenticity_token", token);
+    let response = execute_with_retries(client, || {
+        let form = multipart::Form::new()
+            .text("user[login]", user.clone())
+            .text("user[password]", pass.clone())
+            .text("user[remember_me]", 1.to_string())
+            .text("authenticity_token", token.clone());
 
-    let response = execute_with_retries(client, client
-        .post(LOGIN_URL)
-        .multipart(form)
-        .build()?
-    )
-    .await?;
+        let req = client.post(LOGIN_URL)
+            .multipart(form)
+            .build()?;
+
+        Ok(req)
+    }).await?;
 
     let logged_in = response
         .text()
@@ -124,7 +123,10 @@ fn compute_download_url(id: &usize) -> String {
 pub async fn download(client: &Client, id: &usize) -> Result<bytes::Bytes, Box<dyn std::error::Error>> {
     let download_url = compute_download_url(id);
 
-    let bytes = execute_with_retries(client, client.get(download_url).build()?)
+    let bytes = execute_with_retries(client, || {
+        let req = client.get(download_url.clone()).build()?;
+        Ok(req)
+    })
         .await?
         .bytes()
         .await?;
