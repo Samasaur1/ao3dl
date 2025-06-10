@@ -1,5 +1,4 @@
 use reqwest::{multipart, Client};
-use serde::Deserialize;
 
 mod types;
 
@@ -9,9 +8,13 @@ static AUTHENTICITY_TOKEN_URL: &'static str = "https://archiveofourown.org/token
 static LOGIN_URL: &'static str = "https://archiveofourown.org/users/login";
 
 async fn get_authenticity_token(client: &Client) -> Result<String, Box<dyn std::error::Error>> {
-    let token = client.get(AUTHENTICITY_TOKEN_URL)
+    let resp = client.get(AUTHENTICITY_TOKEN_URL)
         .send()
-        .await?
+        .await?;
+
+    println!("token status code: {}", resp.status());
+
+    let token = resp
         .json::<types::AuthenticityToken>()
         .await?
         .token;
@@ -19,13 +22,20 @@ async fn get_authenticity_token(client: &Client) -> Result<String, Box<dyn std::
     Ok(token)
 }
 
-pub async fn login(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn login(client: &Client, username: &str, password: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let user = username.to_owned();
+    let pass = password.to_owned();
+
+    println!("logging in using {}:{}", user, pass);
+
     let token = get_authenticity_token(client)
         .await?;
 
+    println!("got token {}", token);
+
     let form = multipart::Form::new()
-        .text("user[login]", "user")
-        .text("user[password]", "pwd")
+        .text("user[login]", user)
+        .text("user[password]", pass)
         .text("user[remember_me]", 1.to_string())
         .text("authenticity_token", token);
 
@@ -41,6 +51,8 @@ pub async fn login(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
         .await
         .unwrap()
         .contains(r#"href="/users/logout""#);
+
+    println!("logged in: {}", logged_in);
 
     Ok(())
 }
