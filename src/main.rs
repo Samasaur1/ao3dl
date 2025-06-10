@@ -1,5 +1,6 @@
-use std::{env, fs, io::Write, process};
+use std::{env, io::Write, process};
 
+use anyhow::Context;
 use clap::Parser;
 
 mod ao3;
@@ -11,7 +12,9 @@ struct Cli {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
+    pretty_env_logger::init();
+
     let args = Cli::parse();
 
     let username = match env::var("USERNAME") {
@@ -25,7 +28,7 @@ async fn main() {
             tmp
         },
         Err(env::VarError::NotUnicode(_)) => {
-            eprintln!("Found USERNAME env var, but the contents were not valid Unicode!");
+            log::error!("Found USERNAME env var, but the contents were not valid Unicode!");
             process::exit(1);
         },
     };
@@ -36,29 +39,61 @@ async fn main() {
             rpassword::prompt_password("Password? ").unwrap()
         },
         Err(env::VarError::NotUnicode(_)) => {
-            eprintln!("Found PASSWORD env var, but the contents were not valid Unicode!");
+            log::error!("Found PASSWORD env var, but the contents were not valid Unicode!");
             process::exit(1);
         },
     };
 
-    let client = ao3::make_client().unwrap();
-    ao3::login(&client, &username, &password).await.unwrap();
+    log::debug!("Got username and password");
+
+    let client = ao3::make_client()
+        .context("Could not make client (this is not user error and should never happen)")?;
+
+    log::debug!("Successfully created client");
+
+    log::debug!("Attempting to log in");
+
+    ao3::login(&client, &username, &password)
+        .await
+        .context("Could not log in. Check your username/password")?;
+
+    log::info!("Successfully logged in");
+
+    log::debug!("Attempting to download work with ID {}", &args.id);
 
     let bytes = ao3::download(&client, &args.id)
         .await
-        .unwrap();
+        .context("Could not download data")?;
 
-    fs::write("/tmp/dl.dat", &bytes);
+    log::info!("Successfully downloaded work with ID {}", &args.id);
 
-    // let b = std::fs::read("/tmp/test.epub").unwrap();
-    // let bytes = bytes::Bytes::copy_from_slice(&b);
+    log::debug!("Attempting to parse download as ZIP");
 
     let mut zipped_epub = extractor::as_zip(bytes)
-        .unwrap();
+        .context("Could not parse download as ZIP")?;
 
-    let title = extractor::title(&mut zipped_epub).unwrap();
+    log::info!("Successfully parsed download as ZIP");
 
-    println!("Extracted title '{}'", &title);
+    log::debug!("Attempting to extract title of work with ID {}", &args.id);
 
-    extractor::unzip_to(&mut zipped_epub, format!("{} [ao3 {}].epub", title, &args.id)).unwrap();
+    let file_path = match extractor::title(&mut zipped_epub) {
+        Ok(title) => {
+            log::info!("Extracted title '{}' for work with ID {}", &title, &args.id);
+            format!("{} [ao3 {}].epub", title, &args.id)
+        },
+        Err(e) => {
+            log::warn!("Could not extract title for fic with ID {}", &args.id);
+            log::warn!("Error: {}", e);
+            format!("[ao3 {}].epub", &args.id)
+        },
+    };
+
+    log::debug!("Extracting work to path '{}'", &file_path);
+
+    extractor::unzip_to(&mut zipped_epub, &file_path)
+        .context("Could not unzip EPUB")?;
+
+    log::info!("Successfully extracted work to path '{}'", &file_path);
+
+    Ok(())
 }
