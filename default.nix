@@ -1,4 +1,4 @@
-{ lib, rustPlatform, }:
+{ lib, rustPlatform, pkg-config, openssl }:
 
 let
   cargoToml = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package;
@@ -8,6 +8,14 @@ in
     version = cargoToml.version;
 
     src = ./.;
+
+    nativeBuildInputs = [
+      pkg-config
+    ];
+
+    buildInputs = [
+      openssl
+    ];
 
     useFetchCargoVendor = true;
     cargoHash = "sha256-4QwWRfYm3XPgBfXwhNc4+pWleQdwg2Cm3LQsEi8Fi0Y=";

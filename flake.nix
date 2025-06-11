@@ -30,9 +30,14 @@
         default = pkgs.mkShell {
           name = "ao3dl dev shell";
 
+          nativeBuildInputs = [
+            pkgs.pkg-config
+          ];
+
           buildInputs = [
             pkgs.cargo
             pkgs.rustc
+            pkgs.openssl
           ];
         };
       });
