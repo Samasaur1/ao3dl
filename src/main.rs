@@ -1,4 +1,4 @@
-use std::{env, io::Write, path::PathBuf, process, sync::{Arc, Mutex}};
+use std::{collections::HashSet, env, fs, io::Write, path::PathBuf, process, sync::{Arc, Mutex}};
 
 use anyhow::Context;
 use clap::Parser;
@@ -101,8 +101,7 @@ impl log::Log for MutexLogger {
 
 #[derive(Parser)]
 struct Cli {
-    // works: PathBuf,
-    id: usize,
+    works_file: PathBuf,
 }
 
 #[tokio::main]
@@ -113,6 +112,14 @@ async fn main() -> anyhow::Result<()> {
     log::set_max_level(max_level);
 
     let args = Cli::parse();
+
+    let work_ids = fs::read_to_string(args.works_file)
+        .context("Cannot read works file")?
+        .lines()
+        .filter_map(|line| line.parse::<usize>().ok())
+        .collect::<HashSet<_>>();
+
+    log::info!("Detected {} works", work_ids.len());
 
     let username = match env::var("USERNAME") {
         Ok(u) => u,
@@ -148,22 +155,6 @@ async fn main() -> anyhow::Result<()> {
 
     log::debug!("Successfully created client");
 
-    let pb = Arc::new(Mutex::new(tqdm!(total = 10)));
-    logger.m.lock().unwrap().set_pb(pb.clone());
-
-    for i in 0..10 {
-        std::thread::sleep(std::time::Duration::from_secs_f32(0.1));
-
-        pb.lock().unwrap().update(1)?;
-        log::info!("i: {}", i);
-    }
-
-    logger.m.lock().unwrap().remove_pb();
-
-    log::info!("Done with pb");
-
-    process::exit(0);
-
     log::debug!("Attempting to log in");
 
     ao3::login(&client, &username, &password)
@@ -172,41 +163,50 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("Successfully logged in");
 
-    log::debug!("Attempting to download work with ID {}", &args.id);
+    let pb = Arc::new(Mutex::new(tqdm!(total = work_ids.len())));
+    logger.m.lock().unwrap().set_pb(pb.clone());
 
-    let bytes = ao3::download(&client, &args.id)
-        .await
-        .context("Could not download data")?;
+    for id in work_ids {
+        log::debug!("Attempting to download work with ID {}", id);
 
-    log::info!("Successfully downloaded work with ID {}", &args.id);
+        let bytes = ao3::download(&client, &id)
+            .await
+            .context("Could not download data")?;
 
-    log::debug!("Attempting to parse download as ZIP");
+        log::info!("Successfully downloaded work with ID {}", id);
 
-    let mut zipped_epub = extractor::as_zip(bytes)
-        .context("Could not parse download as ZIP")?;
+        log::debug!("Attempting to parse download as ZIP");
 
-    log::info!("Successfully parsed download as ZIP");
+        let mut zipped_epub = extractor::as_zip(bytes)
+            .context("Could not parse download as ZIP")?;
 
-    log::debug!("Attempting to extract title of work with ID {}", &args.id);
+        log::info!("Successfully parsed download as ZIP");
 
-    let file_path = match extractor::title(&mut zipped_epub) {
-        Ok(title) => {
-            log::info!("Extracted title '{}' for work with ID {}", &title, &args.id);
-            format!("{} [ao3 {}].epub", title, &args.id)
-        },
-        Err(e) => {
-            log::warn!("Could not extract title for fic with ID {}", &args.id);
-            log::warn!("Error: {}", e);
-            format!("[ao3 {}].epub", &args.id)
-        },
-    };
+        log::debug!("Attempting to extract title of work with ID {}", id);
 
-    log::debug!("Extracting work to path '{}'", &file_path);
+        let file_path = match extractor::title(&mut zipped_epub) {
+            Ok(title) => {
+                log::info!("Extracted title '{}' for work with ID {}", &title, id);
+                format!("{} [ao3 {}].epub", title, id)
+            },
+            Err(e) => {
+                log::warn!("Could not extract title for fic with ID {}", id);
+                log::warn!("Error: {}", e);
+                format!("[ao3 {}].epub", id)
+            },
+        };
 
-    extractor::unzip_to(&mut zipped_epub, &file_path)
-        .context("Could not unzip EPUB")?;
+        log::debug!("Extracting work to path '{}'", &file_path);
 
-    log::info!("Successfully extracted work to path '{}'", &file_path);
+        extractor::unzip_to(&mut zipped_epub, &file_path)
+            .context("Could not unzip EPUB")?;
+
+        log::info!("Successfully extracted work to path '{}'", &file_path);
+
+        pb.lock().unwrap().update(1)?;
+    }
+
+    logger.m.lock().unwrap().remove_pb();
 
     Ok(())
 }
