@@ -10,7 +10,7 @@ in
     src = ./.;
 
     useFetchCargoVendor = true;
-    cargoHash = "sha256-ndmaHPRBTkx+Fbl51Zx76Cc1YB6NYR4YPUSZ9RtanTE=";
+    cargoHash = "";
 
     meta = {
       mainProgram = "ao3dl";

@@ -184,17 +184,19 @@ async fn main() -> anyhow::Result<()> {
 
     logger.m.lock().unwrap().remove_pb();
 
-    log::warn!("Failed to download a total of {} work(s)", failed_work_ids.len());
+    if !failed_work_ids.is_empty() {
+        log::warn!("Failed to download a total of {} work(s)", failed_work_ids.len());
 
-    fs::write("failed-works.txt",
-        failed_work_ids
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<String>>()
-            .join("\n"))
-        .context("Cannot write list of works that failed to download to failed-works.txt")?;
+        fs::write("failed-works.txt",
+            failed_work_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<String>>()
+                .join("\n"))
+            .context("Cannot write list of works that failed to download to failed-works.txt")?;
 
-    log::info!("IDs of failing-to-download works written to failed-works.txt");
+        log::info!("IDs of failing-to-download works written to failed-works.txt");
+    }
 
     Ok(())
 }
