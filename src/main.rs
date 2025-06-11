@@ -166,47 +166,75 @@ async fn main() -> anyhow::Result<()> {
     let pb = Arc::new(Mutex::new(tqdm!(total = work_ids.len())));
     logger.m.lock().unwrap().set_pb(pb.clone());
 
+    let mut failed_work_ids = HashSet::<usize>::new();
+
     for id in work_ids {
-        log::debug!("Attempting to download work with ID {}", id);
-
-        let bytes = ao3::download(&client, &id)
+        let res = download_work(&client, &id)
             .await
-            .context("Could not download data")?;
+            .with_context(|| { format!("Cannot download work with ID {}", &id) });
 
-        log::info!("Successfully downloaded work with ID {}", id);
-
-        log::debug!("Attempting to parse download as ZIP");
-
-        let mut zipped_epub = extractor::as_zip(bytes)
-            .context("Could not parse download as ZIP")?;
-
-        log::info!("Successfully parsed download as ZIP");
-
-        log::debug!("Attempting to extract title of work with ID {}", id);
-
-        let file_path = match extractor::title(&mut zipped_epub) {
-            Ok(title) => {
-                log::info!("Extracted title '{}' for work with ID {}", &title, id);
-                format!("{} [ao3 {}].epub", title, id)
-            },
-            Err(e) => {
-                log::warn!("Could not extract title for fic with ID {}", id);
-                log::warn!("Error: {}", e);
-                format!("[ao3 {}].epub", id)
-            },
+        if let Err(e) = res {
+            log::warn!("Cannot download work with ID {}", &id);
+            log::warn!("Error: {}", e);
+            failed_work_ids.insert(id);
         };
-
-        log::debug!("Extracting work to path '{}'", &file_path);
-
-        extractor::unzip_to(&mut zipped_epub, &file_path)
-            .context("Could not unzip EPUB")?;
-
-        log::info!("Successfully extracted work to path '{}'", &file_path);
 
         pb.lock().unwrap().update(1)?;
     }
 
     logger.m.lock().unwrap().remove_pb();
+
+    log::warn!("Failed to download a total of {} work(s)", failed_work_ids.len());
+
+    fs::write("failed-works.txt",
+        failed_work_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<String>>()
+            .join("\n"))
+        .context("Cannot write list of works that failed to download to failed-works.txt")?;
+
+    log::info!("IDs of failing-to-download works written to failed-works.txt");
+
+    Ok(())
+}
+
+async fn download_work(client: &reqwest::Client, work_id: &usize) -> anyhow::Result<()> {
+    log::debug!("Attempting to download work with ID {}", work_id);
+
+    let bytes = ao3::download(&client, &work_id)
+        .await
+        .context("Could not download data")?;
+
+    log::info!("Successfully downloaded work with ID {}", work_id);
+
+    log::debug!("Attempting to parse download as ZIP");
+
+    let mut zipped_epub = extractor::as_zip(bytes)
+        .context("Could not parse download as ZIP (this may happen for hidden works)")?;
+
+    log::info!("Successfully parsed download as ZIP");
+
+    log::debug!("Attempting to extract title of work with ID {}", work_id);
+
+    let file_path = match extractor::title(&mut zipped_epub) {
+        Ok(title) => {
+            log::info!("Extracted title '{}' for work with ID {}", &title, work_id);
+            format!("{} [ao3 {}].epub", title, work_id)
+        },
+        Err(e) => {
+            log::warn!("Could not extract title for fic with ID {}", work_id);
+            log::warn!("Error: {}", e);
+            format!("[ao3 {}].epub", work_id)
+        },
+    };
+
+    log::debug!("Extracting work to path '{}'", &file_path);
+
+    extractor::unzip_to(&mut zipped_epub, &file_path)
+        .context("Could not unzip EPUB")?;
+
+    log::info!("Successfully extracted work to path '{}'", &file_path);
 
     Ok(())
 }
