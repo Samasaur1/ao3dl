@@ -163,7 +163,14 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("Successfully logged in");
 
-    let pb = Arc::new(Mutex::new(tqdm!(total = work_ids.len())));
+    let pb = kdam::Bar::builder()
+        .total(work_ids.len())
+        .unit("work")
+        .inverse_unit(true)
+        .build()
+        .map(Mutex::new)
+        .map(Arc::new)
+        .unwrap(); // Only has a potential to error when bar_format is set
     logger.m.lock().unwrap().set_pb(pb.clone());
 
     let mut failed_work_ids = HashSet::<usize>::new();
