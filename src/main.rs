@@ -121,6 +121,11 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("Detected {} works", work_ids.len());
 
+    if work_ids.is_empty() {
+        log::info!("Exiting early since there is nothing to download");
+        process::exit(0);
+    }
+
     let username = match env::var("USERNAME") {
         Ok(u) => u,
         Err(env::VarError::NotPresent) => {
