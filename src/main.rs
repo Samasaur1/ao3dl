@@ -1,19 +1,116 @@
-use std::{env, io::Write, process};
+use std::{env, io::Write, path::PathBuf, process, sync::{Arc, Mutex}};
 
 use anyhow::Context;
 use clap::Parser;
+use env_logger::builder;
+use kdam::{tqdm, BarExt};
 
 mod ao3;
 mod extractor;
 
+struct PbWriter {
+    pb: Arc<Mutex<kdam::Bar>>,
+}
+
+impl std::io::Write for PbWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut pb = self.pb.lock().unwrap();
+        pb.clear()?;
+        pb.writer.print(b"\r")?;
+        pb.writer.print(buf)?;
+        // pb.writer.print(b"\n")?;
+        pb.refresh()?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+struct KdamLogger {
+    logger: pretty_env_logger::env_logger::Logger
+}
+
+impl KdamLogger {
+    fn new() -> KdamLogger {
+        Self {
+            logger: Self::logger_builder().build(),
+        }
+    }
+
+    fn set_pb(&mut self, pb: Arc<Mutex<kdam::Bar>>) {
+        let writer = PbWriter {
+            pb: pb
+        };
+        self.logger = Self::logger_builder()
+            .target(pretty_env_logger::env_logger::Target::Pipe(Box::new(writer)))
+            .build();
+    }
+
+    fn remove_pb(&mut self) {
+        self.logger = Self::logger_builder().build();
+    }
+
+    fn filter(&self) -> log::LevelFilter {
+        self.logger.filter()
+    }
+
+    fn logger_builder() -> pretty_env_logger::env_logger::Builder {
+        let mut builder = pretty_env_logger::formatted_builder();
+        
+        if let Ok(s) = ::std::env::var("RUST_LOG") {
+            builder.parse_filters(&s);
+        }
+
+        builder
+    }
+}
+
+impl log::Log for KdamLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        self.logger.enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record) {
+        self.logger.log(record)
+    }
+
+    fn flush(&self) {
+        self.logger.flush()
+    }
+}
+
+struct MutexLogger {
+    m: Mutex<KdamLogger>
+}
+
+impl log::Log for MutexLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        self.m.lock().unwrap().enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record) {
+        self.m.lock().unwrap().log(record)
+    }
+
+    fn flush(&self) {
+        self.m.lock().unwrap().flush()
+    }
+}
+
 #[derive(Parser)]
 struct Cli {
+    // works: PathBuf,
     id: usize,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    pretty_env_logger::init();
+    let logger = Box::leak(Box::new(MutexLogger { m: Mutex::new(KdamLogger::new()) }));
+    let max_level = logger.m.lock().unwrap().filter();
+    log::set_logger(logger)?;
+    log::set_max_level(max_level);
 
     let args = Cli::parse();
 
@@ -50,6 +147,22 @@ async fn main() -> anyhow::Result<()> {
         .context("Could not make client (this is not user error and should never happen)")?;
 
     log::debug!("Successfully created client");
+
+    let pb = Arc::new(Mutex::new(tqdm!(total = 10)));
+    logger.m.lock().unwrap().set_pb(pb.clone());
+
+    for i in 0..10 {
+        std::thread::sleep(std::time::Duration::from_secs_f32(0.1));
+
+        pb.lock().unwrap().update(1)?;
+        log::info!("i: {}", i);
+    }
+
+    logger.m.lock().unwrap().remove_pb();
+
+    log::info!("Done with pb");
+
+    process::exit(0);
 
     log::debug!("Attempting to log in");
 
