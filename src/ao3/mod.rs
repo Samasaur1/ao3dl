@@ -16,6 +16,11 @@ async fn execute_with_retries(client: &Client, build_req: impl Fn() -> anyhow::R
     let mut exponential_delay = DELAY_BASE;
 
     loop {
+        if exponential_delay > 64.0 {
+            log::error!(target: "ao3dl::ao3::retrier", "Retried too many times; giving up");
+            bail!("Retried too many times (hit delay limit of 64s)");
+        }
+
         log::trace!(target: "ao3dl::ao3::retrier", "Building request");
         let req = build_req()
             .context("Cannot (re)build request to (re)try it")?;
@@ -51,7 +56,7 @@ async fn execute_with_retries(client: &Client, build_req: impl Fn() -> anyhow::R
                     }
                 } else if code.is_server_error() {
                     exponential_delay *= DELAY_SCALING_FACTOR;
-                    log::trace!(target: "ao3dl::ao3::retrier", "got server error, sleeping {} secs", exponential_delay);
+                    log::trace!(target: "ao3dl::ao3::retrier", "got server error ({}), sleeping {} secs", code.as_str(), exponential_delay);
                     tokio::time::sleep(time::Duration::from_secs_f64(exponential_delay)).await;
                     continue;
                 } else {
