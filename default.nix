@@ -18,7 +18,7 @@ in
     ];
 
     useFetchCargoVendor = true;
-    cargoHash = "sha256-4QwWRfYm3XPgBfXwhNc4+pWleQdwg2Cm3LQsEi8Fi0Y=";
+    cargoHash = "sha256-/x1FBCvU+Mei3RKL8jmMLFE0L2wDRq7da4AELk0Ahzo=";
 
     meta = {
       mainProgram = "ao3dl";

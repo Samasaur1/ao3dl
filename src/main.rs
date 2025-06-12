@@ -4,6 +4,7 @@ use anyhow::Context;
 use clap::Parser;
 use env_logger::builder;
 use kdam::{tqdm, BarExt};
+use regex::Regex;
 
 mod ao3;
 mod extractor;
@@ -113,10 +114,22 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Cli::parse();
 
+    let _work_regex = Regex::new(r"https://archiveofourown\.org/works/(\d+)").unwrap();
     let work_ids = fs::read_to_string(args.works_file)
         .context("Cannot read works file")?
         .lines()
-        .filter_map(|line| line.parse::<usize>().ok())
+        .filter_map(|line| {
+            if let Ok(id) = line.parse::<usize>() {
+                Some(id)
+            } else if let Some(captures) = _work_regex.captures(line) {
+                captures.get(1)?
+                    .as_str()
+                    .parse::<usize>()
+                    .ok()
+            } else {
+                None
+            }
+        })
         .collect::<HashSet<_>>();
 
     log::info!("Detected {} works", work_ids.len());

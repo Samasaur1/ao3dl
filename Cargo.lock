@@ -105,6 +105,7 @@ dependencies = [
  "log",
  "pretty_env_logger",
  "quick-xml",
+ "regex",
  "reqwest",
  "rpassword",
  "serde",
