@@ -2,8 +2,7 @@ use std::{collections::HashSet, env, fs, io::Write, path::PathBuf, process, sync
 
 use anyhow::Context;
 use clap::Parser;
-use env_logger::builder;
-use kdam::{tqdm, BarExt};
+use kdam::BarExt;
 use regex::Regex;
 
 mod ao3;
