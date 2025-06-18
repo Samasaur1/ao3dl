@@ -1,13 +1,14 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env, fs,
     io::{IsTerminal, Write},
     path::PathBuf,
     process,
+    sync::{Mutex, OnceLock},
 };
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use regex::Regex;
 
 use crate::ao3::WorkId;
@@ -18,8 +19,32 @@ mod extractor;
 #[derive(Parser)]
 struct Cli {
     works_file: PathBuf,
+    #[arg(long = "format", value_enum, default_values_t = vec![Format::EPUB])]
+    formats: Vec<Format>,
     #[arg(long)]
     unzip_epubs: bool,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+enum Format {
+    // Sorted in terms of preference for extracting the title
+    EPUB,
+    HTML,
+    MOBI,
+    AZW3,
+    PDF,
+}
+
+impl Format {
+    fn file_extension(&self) -> &'static str {
+        match self {
+            Format::AZW3 => "azw3",
+            Format::EPUB => "epub",
+            Format::MOBI => "mobi",
+            Format::PDF => "pdf",
+            Format::HTML => "html",
+        }
+    }
 }
 
 struct ProgressBar {
@@ -133,7 +158,17 @@ impl Drop for IndeterminateProgressBar {
 async fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
 
-    let args = Cli::parse();
+    let mut args = Cli::parse();
+    args.formats.sort();
+    let args = args;
+
+    log::info!("Requested formats: {:?}", args.formats);
+
+    if args.formats.is_empty() {
+        // Since we default to EPUB, I'm not sure how to even trigger this
+        log::info!("Exiting early since no formats were requested");
+        process::exit(64); // usage
+    }
 
     let _work_regex = Regex::new(r"https://archiveofourown\.org/works/(\d+)").unwrap();
     let raw_work_ids = fs::read_to_string(args.works_file)
@@ -238,27 +273,52 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("Successfully logged in");
 
-    let mut pb = ProgressBar::new(work_ids.len());
+    let mut pb = ProgressBar::new(work_ids.len() * args.formats.len());
 
     let mut failed_work_ids = HashSet::<usize>::new();
 
     pb.begin();
     for work in work_ids {
-        let res = download_work(&client, &work, args.unzip_epubs)
-            .await
-            .with_context(|| format!("Cannot download work with ID {}", &work.id()));
+        let mut formats_left = args.formats.len();
 
-        if let Err(e) = res {
-            let msg = e
-                .chain()
-                .map(|link| link.to_string())
-                .collect::<Vec<String>>()
-                .join(", because ");
-            log::warn!("{}", msg);
-            failed_work_ids.insert(*work.id());
-        };
+        for f in &args.formats {
+            let res = download_work(&client, &work, *f, args.unzip_epubs)
+                .await
+                .with_context(|| {
+                    format!("Cannot download work with ID {} as {:?}", &work.id(), *f)
+                });
 
-        pb.next();
+            match res {
+                Ok(_) => {
+                    formats_left -= 1;
+                    pb.next();
+                }
+                Err(e) => {
+                    let msg = e
+                        .chain()
+                        .map(|link| link.to_string())
+                        .collect::<Vec<String>>()
+                        .join(", because ");
+                    log::warn!("{}", msg);
+                    failed_work_ids.insert(*work.id());
+
+                    match formats_left {
+                        0 => {} // Can never happen
+                        1 => {} // This is the last format of this work
+                        2 => {
+                            log::warn!("Skipping remaining format");
+                        }
+                        _ => {
+                            log::warn!("Skipping {} remaining formats", formats_left - 1);
+                        }
+                    }
+                    for _ in 1..formats_left {
+                        pb.next();
+                    }
+                    break;
+                }
+            };
+        }
     }
     pb.end();
 
@@ -284,69 +344,202 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn download_work(client: &reqwest::Client, work: &ao3::WorkId, unzip: bool) -> anyhow::Result<()> {
-    log::debug!("Attempting to download work with ID {}", work.id());
+async fn download_work(
+    client: &reqwest::Client,
+    work: &ao3::WorkId,
+    format: Format,
+    unzip: bool,
+) -> anyhow::Result<()> {
+    log::debug!(
+        "Attempting to download work with ID {} as {:?}",
+        work.id(),
+        format
+    );
 
-    let bytes = ao3::download(&client, &work)
+    static CACHE_MUTEX: OnceLock<Mutex<HashMap<usize, String>>> = OnceLock::new();
+    CACHE_MUTEX.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = CACHE_MUTEX
+        .get()
+        .with_context(|| "Cannot get filename cache")?
+        .lock()
+        .unwrap();
+
+    let bytes = ao3::download(&client, &work, format)
         .await
         .context("Could not download data")?;
 
-    log::info!("Successfully downloaded work with ID {}", work.id());
+    log::info!(
+        "Successfully downloaded work with ID {} as {:?}",
+        work.id(),
+        format
+    );
 
-    log::debug!("Attempting to parse download as ZIP");
-
-    let mut zipped_epub = extractor::as_zip(&bytes)
-        .context("Could not parse download as ZIP (this may happen for hidden works)")?;
-
-    log::info!("Successfully parsed download as ZIP");
-
-    log::debug!("Attempting to extract title of work with ID {}", work.id());
-
-    let mut file_path = match extractor::title(&mut zipped_epub) {
-        Ok(title) => {
-            log::info!(
-                "Extracted title '{}' for work with ID {}",
-                &title,
-                work.id()
+    match format {
+        Format::AZW3 => {
+            let file_name = match cache.get(work.id()) {
+                Some(name) => {
+                    log::trace!("Found file name in cache");
+                    name.to_owned()
+                }
+                None => {
+                    // Don't currently know how to extract a title from an AZW3
+                    log::trace!("Could not find file name in cache; defaulting to work ID");
+                    format!("[ao3 {}]", work.id())
+                }
+            };
+            let file_path = format!(
+                "{file_name}.{extension}",
+                extension = format.file_extension()
             );
-            format!("{} [ao3 {}].epub", title, work.id())
+
+            log::debug!("Saving work to path '{}'", &file_path);
+
+            fs::write(&file_path, &bytes)?;
+
+            log::info!("Successfully saved work to path '{}'", &file_path);
+
+            Ok(())
         }
-        Err(e) => {
-            let msg = e
-                .chain()
-                .map(|link| link.to_string())
-                .collect::<Vec<String>>()
-                .join(", because ");
-            log::warn!(
-                "Could not extract title for fic with ID {}, because {}",
-                work.id(),
-                msg
+        Format::EPUB => {
+            log::debug!("Attempting to parse download as ZIP");
+
+            let mut zipped_epub = extractor::as_zip(&bytes)
+                .context("Could not parse download as ZIP (this may happen for hidden works)")?;
+
+            log::info!("Successfully parsed download as ZIP");
+
+            log::debug!("Attempting to extract title of work with ID {}", work.id());
+
+            let mut file_name = match extractor::title(&mut zipped_epub) {
+                Ok(title) => {
+                    log::info!(
+                        "Extracted title '{}' for work with ID {}",
+                        &title,
+                        work.id()
+                    );
+                    format!("{} [ao3 {}]", title, work.id())
+                }
+                Err(e) => {
+                    let msg = e
+                        .chain()
+                        .map(|link| link.to_string())
+                        .collect::<Vec<String>>()
+                        .join(", because ");
+                    log::warn!(
+                        "Could not extract title for fic with ID {}, because {}",
+                        work.id(),
+                        msg
+                    );
+                    format!("[ao3 {}]", work.id())
+                }
+            };
+
+            let presanitized_len = file_name.len();
+            file_name.retain(|c| c != '\0' && c != '/');
+            let sanitized_len = file_name.len();
+            if sanitized_len < presanitized_len {
+                log::info!("Sanitizing destination file path");
+            }
+            log::trace!("Inserting file name into cache");
+            cache.insert(*work.id(), file_name.to_string());
+            let file_path = format!(
+                "{file_name}.{extension}",
+                extension = format.file_extension()
             );
-            format!("[ao3 {}].epub", work.id())
+
+            if unzip {
+                log::debug!("Extracting work to path '{}'", &file_path);
+
+                extractor::unzip_to(&mut zipped_epub, &file_path)
+                    .context("Could not unzip EPUB")?;
+
+                log::info!("Successfully extracted work to path '{}'", &file_path);
+            } else {
+                log::debug!("Saving work to path '{}'", &file_path);
+
+                fs::write(&file_path, &bytes)?;
+
+                log::info!("Successfully saved work to path '{}'", &file_path);
+            }
+
+            Ok(())
         }
-    };
+        Format::HTML => {
+            let file_name = match cache.get(work.id()) {
+                Some(name) => {
+                    log::trace!("Found file name in cache");
+                    name.to_owned()
+                }
+                None => {
+                    // TODO: extract title from HTML
+                    // body > div#preface > p.message > b
+                    // body > div#preface > div.meta > h1
+                    log::trace!("Could not find file name in cache; defaulting to work ID");
+                    format!("[ao3 {}]", work.id())
+                }
+            };
+            let file_path = format!(
+                "{file_name}.{extension}",
+                extension = format.file_extension()
+            );
 
-    let presanitized_len = file_path.len();
-    file_path.retain(|c| c != '\0' && c != '/');
-    let sanitized_len = file_path.len();
-    if sanitized_len < presanitized_len {
-        log::info!("Sanitizing destination file path");
+            log::debug!("Saving work to path '{}'", &file_path);
+
+            fs::write(&file_path, &bytes)?;
+
+            log::info!("Successfully saved work to path '{}'", &file_path);
+
+            Ok(())
+        }
+        Format::MOBI => {
+            let file_name = match cache.get(work.id()) {
+                Some(name) => {
+                    log::trace!("Found file name in cache");
+                    name.to_owned()
+                }
+                None => {
+                    // TODO: extract title from MOBI
+                    log::trace!("Could not find file name in cache; defaulting to work ID");
+                    format!("[ao3 {}]", work.id())
+                }
+            };
+            let file_path = format!(
+                "{file_name}.{extension}",
+                extension = format.file_extension()
+            );
+
+            log::debug!("Saving work to path '{}'", &file_path);
+
+            fs::write(&file_path, &bytes)?;
+
+            log::info!("Successfully saved work to path '{}'", &file_path);
+
+            Ok(())
+        }
+        Format::PDF => {
+            let file_name = match cache.get(work.id()) {
+                Some(name) => {
+                    log::trace!("Found file name in cache");
+                    name.to_owned()
+                }
+                None => {
+                    // Don't currently know how to extract a title from an PDF
+                    log::trace!("Could not find file name in cache; defaulting to work ID");
+                    format!("[ao3 {}]", work.id())
+                }
+            };
+            let file_path = format!(
+                "{file_name}.{extension}",
+                extension = format.file_extension()
+            );
+
+            log::debug!("Saving work to path '{}'", &file_path);
+
+            fs::write(&file_path, &bytes)?;
+
+            log::info!("Successfully saved work to path '{}'", &file_path);
+
+            Ok(())
+        }
     }
-    let file_path = file_path; // make non-mut
-
-    if unzip {
-        log::debug!("Extracting work to path '{}'", &file_path);
-
-        extractor::unzip_to(&mut zipped_epub, &file_path).context("Could not unzip EPUB")?;
-
-        log::info!("Successfully extracted work to path '{}'", &file_path);
-    } else {
-        log::debug!("Saving work to path '{}'", &file_path);
-
-        fs::write(&file_path, &bytes)?;
-
-        log::info!("Successfully saved work to path '{}'", &file_path);
-    }
-
-    Ok(())
 }

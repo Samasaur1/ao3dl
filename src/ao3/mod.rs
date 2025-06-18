@@ -1,4 +1,8 @@
 use core::time;
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
 
 use anyhow::{Context, bail};
 use reqwest::{Client, Request, Response, StatusCode, multipart};
@@ -151,53 +155,91 @@ pub async fn login(client: &Client, username: &str, password: &str) -> anyhow::R
     Ok(())
 }
 
-async fn compute_download_url(client: &Client, work: &WorkId) -> anyhow::Result<String> {
+async fn compute_download_url(
+    client: &Client,
+    work: &WorkId,
+    format: crate::Format,
+) -> anyhow::Result<String> {
     log::trace!("Computing download URL for work with ID {}", &work.id());
+
+    static CACHE_MUTEX: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
+    CACHE_MUTEX.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = CACHE_MUTEX
+        .get()
+        .with_context(|| "Cannot get timestamp cache")?
+        .lock()
+        .unwrap();
 
     let download_path = match work {
         WorkId::Bare(id) => {
-            log::trace!("Fetching work page to determine updated_at timestamp for work");
-            let work_url = format!("https://archiveofourown.org/works/{}", id);
-
-            let req_builder = || {
-                let req = client
-                    .get(work_url.clone())
-                    .build()
-                    .context("Cannot build work request")?;
-                Ok(req)
-            };
-
-            let regex = regex::Regex::new(
+            if let Some(timestamp) = cache.get(id) {
+                log::trace!(
+                    "Found matching work ID in timestamp cache; short-circuiting with timestamp {timestamp}"
+                );
                 format!(
-                    r#"<a href="(/downloads/{}/.+\.epub\?updated_at=\d+)">EPUB</a>"#,
-                    id
+                    "/downloads/{id}/x.{extension}?updated_at={timestamp}",
+                    extension = format.file_extension()
                 )
-                .as_str(),
-            )
-            .context("Cannot create regex!")?;
+            } else {
+                log::trace!("Fetching work page to determine updated_at timestamp for work");
+                let work_url = format!("https://archiveofourown.org/works/{}", id);
 
-            let work_html = execute_with_retries(client, req_builder)
-                .await
-                .with_context(|| format!("Cannot fetch main work page for ID {}", id))?
-                .text()
-                .await
-                .context("Work body not convertible to string")?;
+                let req_builder = || {
+                    let req = client
+                        .get(work_url.clone())
+                        .build()
+                        .context("Cannot build work request")?;
+                    Ok(req)
+                };
 
-            let download_path = regex
-                .captures(&work_html)
-                .context("Cannot find EPUB download URL in work HTML")?
-                .get(1)
-                .unwrap()
-                .as_str();
+                let regex = regex::Regex::new(
+                    format!(
+                        r#"<a href="(?<download_path>/downloads/{}/(?<file_name>.+)\.epub\?updated_at=(?<timestamp>\d+))">EPUB</a>"#,
+                        id
+                    )
+                    .as_str(),
+                )
+                .context("Cannot create regex!")?;
 
-            download_path.to_string()
+                let work_html = execute_with_retries(client, req_builder)
+                    .await
+                    .with_context(|| format!("Cannot fetch main work page for ID {}", id))?
+                    .text()
+                    .await
+                    .context("Work body not convertible to string")?;
+
+                let captures = regex
+                    .captures(&work_html)
+                    .context("Cannot find EPUB download URL in work HTML")?;
+
+                let file_name = captures
+                    .name("file_name")
+                    .with_context(|| "Cannot find filename in download path")?
+                    .as_str();
+                let timestamp = captures
+                    .name("timestamp")
+                    .with_context(|| "Cannot find timestamp in download path")?
+                    .as_str()
+                    .parse::<usize>()?;
+
+                _ = cache.insert(*id, timestamp);
+
+                format!(
+                    "/downloads/{id}/{file_name}.{extension}?updated_at={timestamp}",
+                    extension = format.file_extension()
+                )
+            }
         }
         WorkId::WithTimestamp { id, timestamp } => {
             log::trace!(
                 "Work comes annotated with timestamp {}; short-circuiting",
                 timestamp
             );
-            format!("/downloads/{}/x.epub?updated_at={}", id, timestamp)
+            _ = cache.insert(*id, *timestamp);
+            format!(
+                "/downloads/{id}/x.{extension}?updated_at={timestamp}",
+                extension = format.file_extension()
+            )
         }
     };
 
@@ -210,10 +252,14 @@ async fn compute_download_url(client: &Client, work: &WorkId) -> anyhow::Result<
     Ok(format!("https://archiveofourown.org{}", download_path))
 }
 
-pub async fn download(client: &Client, work: &WorkId) -> anyhow::Result<bytes::Bytes> {
+pub async fn download(
+    client: &Client,
+    work: &WorkId,
+    format: crate::Format,
+) -> anyhow::Result<bytes::Bytes> {
     log::trace!("Attempting to download work with ID {}", &work.id());
 
-    let download_url = compute_download_url(&client, work)
+    let download_url = compute_download_url(&client, work, format)
         .await
         .with_context(|| format!("Cannot determine download URL for ID {}", work.id()))?;
 
