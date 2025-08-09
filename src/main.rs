@@ -243,7 +243,7 @@ async fn download_work(client: &reqwest::Client, work_id: &usize) -> anyhow::Res
 
     log::debug!("Attempting to extract title of work with ID {}", work_id);
 
-    let file_path = match extractor::title(&mut zipped_epub) {
+    let mut file_path = match extractor::title(&mut zipped_epub) {
         Ok(title) => {
             log::info!("Extracted title '{}' for work with ID {}", &title, work_id);
             format!("{} [ao3 {}].epub", title, work_id)
@@ -254,6 +254,14 @@ async fn download_work(client: &reqwest::Client, work_id: &usize) -> anyhow::Res
             format!("[ao3 {}].epub", work_id)
         },
     };
+
+    let presanitized_len = file_path.len();
+    file_path.retain(|c| c != '\0' && c != '/');
+    let sanitized_len = file_path.len();
+    if sanitized_len < presanitized_len {
+        log::info!("Sanitizing destination file path");
+    }
+    let file_path = file_path; // make non-mut
 
     log::debug!("Extracting work to path '{}'", &file_path);
 
