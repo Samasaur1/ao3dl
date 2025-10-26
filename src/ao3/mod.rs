@@ -130,7 +130,7 @@ pub async fn login(client: &Client, username: &str, password: &str) -> anyhow::R
         .text()
         .await
         .context("Cannot get body of response to login request as text")?
-        .contains(r#"href="/users/logout""#);
+        .contains(r#"href="/users/logout"#);
 
     if logged_in {
         log::info!("Successfully logged in");
