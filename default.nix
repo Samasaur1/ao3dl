@@ -17,7 +17,6 @@ in
       openssl
     ];
 
-    useFetchCargoVendor = true;
     cargoHash = "sha256-gQP/o2xNJa5G/v69tGli7fblnQLQJcn+mYtuNWU03d8=";
 
     meta = {
