@@ -1,115 +1,121 @@
-use std::{collections::HashSet, env, fs, io::Write, path::PathBuf, process, sync::{Arc, Mutex}};
+use std::{collections::HashSet, env, fs, io::{IsTerminal, Write}, path::PathBuf, process};
 
 use anyhow::Context;
 use clap::Parser;
-use kdam::BarExt;
 use regex::Regex;
 
 mod ao3;
 mod extractor;
-
-struct PbWriter {
-    pb: Arc<Mutex<kdam::Bar>>,
-}
-
-impl std::io::Write for PbWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut pb = self.pb.lock().unwrap();
-        pb.clear()?;
-        pb.writer.print(b"\r")?;
-        pb.writer.print(buf)?;
-        // pb.writer.print(b"\n")?;
-        pb.refresh()?;
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-struct KdamLogger {
-    logger: pretty_env_logger::env_logger::Logger
-}
-
-impl KdamLogger {
-    fn new() -> KdamLogger {
-        Self {
-            logger: Self::logger_builder().build(),
-        }
-    }
-
-    fn set_pb(&mut self, pb: Arc<Mutex<kdam::Bar>>) {
-        let writer = PbWriter {
-            pb: pb
-        };
-        self.logger = Self::logger_builder()
-            .target(pretty_env_logger::env_logger::Target::Pipe(Box::new(writer)))
-            .build();
-    }
-
-    fn remove_pb(&mut self) {
-        self.logger = Self::logger_builder().build();
-    }
-
-    fn filter(&self) -> log::LevelFilter {
-        self.logger.filter()
-    }
-
-    fn logger_builder() -> pretty_env_logger::env_logger::Builder {
-        let mut builder = pretty_env_logger::formatted_builder();
-        
-        if let Ok(s) = ::std::env::var("RUST_LOG") {
-            builder.parse_filters(&s);
-        }
-
-        builder
-    }
-}
-
-impl log::Log for KdamLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        self.logger.enabled(metadata)
-    }
-
-    fn log(&self, record: &log::Record) {
-        self.logger.log(record)
-    }
-
-    fn flush(&self) {
-        self.logger.flush()
-    }
-}
-
-struct MutexLogger {
-    m: Mutex<KdamLogger>
-}
-
-impl log::Log for MutexLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        self.m.lock().unwrap().enabled(metadata)
-    }
-
-    fn log(&self, record: &log::Record) {
-        self.m.lock().unwrap().log(record)
-    }
-
-    fn flush(&self) {
-        self.m.lock().unwrap().flush()
-    }
-}
 
 #[derive(Parser)]
 struct Cli {
     works_file: PathBuf,
 }
 
+struct ProgressBar {
+    // https://github.com/ghostty-org/ghostty/pull/7975
+    // https://conemu.github.io/en/AnsiEscapeCodes.html#ConEmu_specific_OSC
+    // https://github.com/ghostty-org/ghostty/pull/8477
+    // https://doc.rust-lang.org/std/io/trait.IsTerminal.html
+    isatty: bool,
+    current: usize,
+    max: usize,
+}
+
+impl ProgressBar {
+    fn new(max: usize) -> ProgressBar {
+        ProgressBar {
+            isatty: std::io::stdout().is_terminal(),
+            current: 0,
+            max: max
+        }
+    }
+
+    fn begin(&mut self) {
+        self.current = 0;
+        self.write_pb(true, 0);
+    }
+
+    fn next(&mut self) {
+        self.current += 1;
+        let percent = 100 * self.current / self.max;
+        self.write_pb(true, percent);
+    }
+
+    fn end(&mut self) {
+        self.write_pb(false, 0);
+        self.isatty = false;
+    }
+
+    fn write_pb(&mut self, going: bool, pct: usize) {
+        if !self.isatty { return }
+        let buf = if going {
+            format!("\x1b]9;4;1;{}\x07", pct)
+        } else {
+            "\x1b]9;4;0\x07".to_string()
+        };
+        if std::io::stdout().write(buf.as_bytes()).is_err() {
+            self.isatty = false;
+            return
+        }
+        if std::io::stdout().flush().is_err() {
+            self.isatty = false;
+            return
+        }
+    }
+}
+
+impl Drop for ProgressBar {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
+struct IndeterminateProgressBar {
+    isatty: bool,
+}
+
+impl IndeterminateProgressBar {
+    fn new() -> IndeterminateProgressBar {
+        return IndeterminateProgressBar { isatty: std::io::stdout().is_terminal() }
+    }
+
+    fn begin(&mut self) {
+        self.write_pb(true);
+    }
+
+    fn end(&mut self) {
+        self.write_pb(false);
+        self.isatty = false;
+    }
+
+    fn write_pb(&mut self, going: bool) {
+        if !self.isatty { return }
+        let buf = if going {
+            "\x1b]9;4;3\x07"
+        } else {
+            "\x1b]9;4;0\x07"
+        };
+        if std::io::stdout().write(buf.as_bytes()).is_err() {
+            self.isatty = false;
+            return
+        }
+        if std::io::stdout().flush().is_err() {
+            self.isatty = false;
+            return
+        }
+    }
+}
+
+impl Drop for IndeterminateProgressBar {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let logger = Box::leak(Box::new(MutexLogger { m: Mutex::new(KdamLogger::new()) }));
-    let max_level = logger.m.lock().unwrap().filter();
-    log::set_logger(logger)?;
-    log::set_max_level(max_level);
+    pretty_env_logger::init();
 
     let args = Cli::parse();
 
@@ -174,24 +180,21 @@ async fn main() -> anyhow::Result<()> {
 
     log::debug!("Attempting to log in");
 
+    let mut pb = IndeterminateProgressBar::new();
+
+    pb.begin();
     ao3::login(&client, &username, &password)
         .await
         .context("Could not log in. Check your username/password")?;
+    pb.end();
 
     log::info!("Successfully logged in");
 
-    let pb = kdam::Bar::builder()
-        .total(work_ids.len())
-        .unit("work")
-        .inverse_unit(true)
-        .build()
-        .map(Mutex::new)
-        .map(Arc::new)
-        .unwrap(); // Only has a potential to error when bar_format is set
-    logger.m.lock().unwrap().set_pb(pb.clone());
+    let mut pb = ProgressBar::new(work_ids.len());
 
     let mut failed_work_ids = HashSet::<usize>::new();
 
+    pb.begin();
     for id in work_ids {
         let res = download_work(&client, &id)
             .await
@@ -203,10 +206,9 @@ async fn main() -> anyhow::Result<()> {
             failed_work_ids.insert(id);
         };
 
-        pb.lock().unwrap().update(1)?;
+        pb.next();
     }
-
-    logger.m.lock().unwrap().remove_pb();
+    pb.end();
 
     if !failed_work_ids.is_empty() {
         log::warn!("Failed to download a total of {} work(s)", failed_work_ids.len());
