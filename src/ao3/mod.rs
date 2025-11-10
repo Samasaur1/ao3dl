@@ -141,14 +141,50 @@ pub async fn login(client: &Client, username: &str, password: &str) -> anyhow::R
     Ok(())
 }
 
-fn compute_download_url(id: &usize) -> String {
-    format!("https://archiveofourown.org/downloads/{}/x.epub", id)
+async fn compute_download_url(client: &Client, id: &usize) -> anyhow::Result<String> {
+    log::trace!("Computing download URL for work with ID {}", &id);
+
+    let work_url = format!("https://archiveofourown.org/works/{}", id);
+
+    let req_builder = || {
+        let req = client
+            .get(work_url.clone())
+            .build()
+            .context("Cannot build work request")?;
+        Ok(req)
+    };
+
+    let regex = regex::Regex::new(format!(r#"<a href="(/downloads/{}/.+\.epub\?updated_at=\d+)">EPUB</a>"#, id).as_str())
+        .context("Cannot create regex!")?;
+
+    let work_html = execute_with_retries(client, req_builder)
+        .await
+        .with_context(|| {
+            format!("Cannot fetch main work page for ID {}", id)
+        })?
+        .text()
+        .await
+        .context("Work body not convertible to string")?;
+
+    let download_path = regex.captures(&work_html)
+        .context("Cannot find EPUB download URL in work HTML")?
+        .get(1)
+        .unwrap()
+        .as_str();
+    
+    log::trace!("Computed download URL for work with ID {} as {}", &id, download_path);
+
+    Ok(format!("https://archiveofourown.org{}", download_path))
 }
 
 pub async fn download(client: &Client, id: &usize) -> anyhow::Result<bytes::Bytes> {
     log::trace!("Attempting to download work with ID {}", &id);
 
-    let download_url = compute_download_url(id);
+    let download_url = compute_download_url(&client, id)
+        .await
+        .with_context(|| {
+            format!("Cannot determine download URL for ID {}", id)
+        })?;
 
     let req_builder = || {
         let req = client
