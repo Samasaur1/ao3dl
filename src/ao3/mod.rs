@@ -5,7 +5,7 @@ use reqwest::{multipart, Client, Request, Response, StatusCode};
 
 mod types;
 
-static AO3DL_USER_AGENT: &'static str = "ao3dl/1.1.1";
+static AO3DL_USER_AGENT: &'static str = "ao3dl/1.1.2";
 
 static AUTHENTICITY_TOKEN_URL: &'static str = "https://archiveofourown.org/token_dispenser.json";
 static LOGIN_URL: &'static str = "https://archiveofourown.org/users/login";
