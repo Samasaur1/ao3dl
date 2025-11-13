@@ -202,7 +202,7 @@ async fn main() -> anyhow::Result<()> {
 
         if let Err(e) = res {
             log::warn!("Cannot download work with ID {}", &id);
-            log::warn!("Error: {}", e);
+            log::warn!("Error: {:?}", e); // THis only puts the most recent context (L201) in the log
             failed_work_ids.insert(id);
         };
 
@@ -252,7 +252,7 @@ async fn download_work(client: &reqwest::Client, work_id: &usize) -> anyhow::Res
         },
         Err(e) => {
             log::warn!("Could not extract title for fic with ID {}", work_id);
-            log::warn!("Error: {}", e);
+            log::warn!("Error: {:?}", e);
             format!("[ao3 {}].epub", work_id)
         },
     };
