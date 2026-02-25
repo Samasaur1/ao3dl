@@ -1,7 +1,7 @@
 use core::time;
 
-use anyhow::{bail, Context};
-use reqwest::{multipart, Client, Request, Response, StatusCode};
+use anyhow::{Context, bail};
+use reqwest::{Client, Request, Response, StatusCode, multipart};
 
 pub use types::WorkId;
 
@@ -12,7 +12,10 @@ static AO3DL_USER_AGENT: &'static str = "ao3dl/1.1.2";
 static AUTHENTICITY_TOKEN_URL: &'static str = "https://archiveofourown.org/token_dispenser.json";
 static LOGIN_URL: &'static str = "https://archiveofourown.org/users/login";
 
-async fn execute_with_retries(client: &Client, build_req: impl Fn() -> anyhow::Result<Request>) -> anyhow::Result<Response> {
+async fn execute_with_retries(
+    client: &Client,
+    build_req: impl Fn() -> anyhow::Result<Request>,
+) -> anyhow::Result<Response> {
     const DELAY_SCALING_FACTOR: f64 = 1.25;
     const DELAY_BASE: f64 = 1.0;
     let mut exponential_delay = DELAY_BASE;
@@ -24,12 +27,9 @@ async fn execute_with_retries(client: &Client, build_req: impl Fn() -> anyhow::R
         }
 
         log::trace!(target: "ao3dl::ao3::retrier", "Building request");
-        let req = build_req()
-            .context("Cannot (re)build request to (re)try it")?;
+        let req = build_req().context("Cannot (re)build request to (re)try it")?;
         log::trace!(target: "ao3dl::ao3::retrier", "Attempting request");
-        let possible_response = client
-            .execute(req)
-            .await;
+        let possible_response = client.execute(req).await;
 
         match possible_response {
             Ok(resp) => {
@@ -39,7 +39,11 @@ async fn execute_with_retries(client: &Client, build_req: impl Fn() -> anyhow::R
                     return Ok(resp);
                 } else if code == StatusCode::TOO_MANY_REQUESTS {
                     log::debug!(target: "ao3dl::ao3::retrier", "Got HTTP 429");
-                    match resp.headers().get(reqwest::header::RETRY_AFTER).map(|x| x.to_str()) {
+                    match resp
+                        .headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .map(|x| x.to_str())
+                    {
                         Some(Ok(val)) => {
                             if let Ok(delay) = val.parse::<u64>() {
                                 // This is ao3's case
@@ -51,7 +55,7 @@ async fn execute_with_retries(client: &Client, build_req: impl Fn() -> anyhow::R
                                 // Technically this header can also be a date
                                 bail!("Retry-After header had unparseable value {}", val);
                             }
-                        },
+                        }
                         _ => {
                             bail!("HTTP 429 Too Many Requests without Retry-After header");
                         }
@@ -62,12 +66,16 @@ async fn execute_with_retries(client: &Client, build_req: impl Fn() -> anyhow::R
                     tokio::time::sleep(time::Duration::from_secs_f64(exponential_delay)).await;
                     continue;
                 } else {
-                    bail!("Unhandled HTTP code {} ({:?})", code.as_str(), code.canonical_reason());
+                    bail!(
+                        "Unhandled HTTP code {} ({:?})",
+                        code.as_str(),
+                        code.canonical_reason()
+                    );
                 }
-            },
+            }
             Err(e) => {
                 bail!("Got error {:?}", e);
-            },
+            }
         };
     }
 }
@@ -159,33 +167,45 @@ async fn compute_download_url(client: &Client, work: &WorkId) -> anyhow::Result<
                 Ok(req)
             };
 
-            let regex = regex::Regex::new(format!(r#"<a href="(/downloads/{}/.+\.epub\?updated_at=\d+)">EPUB</a>"#, id).as_str())
-                .context("Cannot create regex!")?;
+            let regex = regex::Regex::new(
+                format!(
+                    r#"<a href="(/downloads/{}/.+\.epub\?updated_at=\d+)">EPUB</a>"#,
+                    id
+                )
+                .as_str(),
+            )
+            .context("Cannot create regex!")?;
 
             let work_html = execute_with_retries(client, req_builder)
                 .await
-                .with_context(|| {
-                    format!("Cannot fetch main work page for ID {}", id)
-                })?
+                .with_context(|| format!("Cannot fetch main work page for ID {}", id))?
                 .text()
                 .await
                 .context("Work body not convertible to string")?;
 
-            let download_path = regex.captures(&work_html)
+            let download_path = regex
+                .captures(&work_html)
                 .context("Cannot find EPUB download URL in work HTML")?
                 .get(1)
                 .unwrap()
                 .as_str();
 
             download_path.to_string()
-        },
+        }
         WorkId::WithTimestamp { id, timestamp } => {
-            log::trace!("Work comes annotated with timestamp {}; short-circuiting", timestamp);
+            log::trace!(
+                "Work comes annotated with timestamp {}; short-circuiting",
+                timestamp
+            );
             format!("/downloads/{}/x.epub?updated_at={}", id, timestamp)
-        },
+        }
     };
-    
-    log::trace!("Computed download URL for work with ID {} as {}", &work.id(), download_path);
+
+    log::trace!(
+        "Computed download URL for work with ID {} as {}",
+        &work.id(),
+        download_path
+    );
 
     Ok(format!("https://archiveofourown.org{}", download_path))
 }
@@ -195,9 +215,7 @@ pub async fn download(client: &Client, work: &WorkId) -> anyhow::Result<bytes::B
 
     let download_url = compute_download_url(&client, work)
         .await
-        .with_context(|| {
-            format!("Cannot determine download URL for ID {}", work.id())
-        })?;
+        .with_context(|| format!("Cannot determine download URL for ID {}", work.id()))?;
 
     let req_builder = || {
         let req = client
@@ -208,9 +226,7 @@ pub async fn download(client: &Client, work: &WorkId) -> anyhow::Result<bytes::B
     };
     let bytes = execute_with_retries(client, req_builder)
         .await
-        .with_context(|| {
-            format!("Cannot download work with ID {}", work.id())
-        })?
+        .with_context(|| format!("Cannot download work with ID {}", work.id()))?
         .bytes()
         .await
         .context("Cannot get body of response to download request as bytes")?;

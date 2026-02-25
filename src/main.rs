@@ -1,4 +1,10 @@
-use std::{collections::HashSet, env, fs, io::{IsTerminal, Write}, path::PathBuf, process};
+use std::{
+    collections::HashSet,
+    env, fs,
+    io::{IsTerminal, Write},
+    path::PathBuf,
+    process,
+};
 
 use anyhow::Context;
 use clap::Parser;
@@ -29,7 +35,7 @@ impl ProgressBar {
         ProgressBar {
             isatty: std::io::stdout().is_terminal(),
             current: 0,
-            max: max
+            max: max,
         }
     }
 
@@ -50,7 +56,9 @@ impl ProgressBar {
     }
 
     fn write_pb(&mut self, going: bool, pct: usize) {
-        if !self.isatty { return }
+        if !self.isatty {
+            return;
+        }
         let buf = if going {
             format!("\x1b]9;4;1;{}\x07", pct)
         } else {
@@ -58,11 +66,11 @@ impl ProgressBar {
         };
         if std::io::stdout().write(buf.as_bytes()).is_err() {
             self.isatty = false;
-            return
+            return;
         }
         if std::io::stdout().flush().is_err() {
             self.isatty = false;
-            return
+            return;
         }
     }
 }
@@ -79,7 +87,9 @@ struct IndeterminateProgressBar {
 
 impl IndeterminateProgressBar {
     fn new() -> IndeterminateProgressBar {
-        return IndeterminateProgressBar { isatty: std::io::stdout().is_terminal() }
+        return IndeterminateProgressBar {
+            isatty: std::io::stdout().is_terminal(),
+        };
     }
 
     fn begin(&mut self) {
@@ -92,7 +102,9 @@ impl IndeterminateProgressBar {
     }
 
     fn write_pb(&mut self, going: bool) {
-        if !self.isatty { return }
+        if !self.isatty {
+            return;
+        }
         let buf = if going {
             "\x1b]9;4;3\x07"
         } else {
@@ -100,11 +112,11 @@ impl IndeterminateProgressBar {
         };
         if std::io::stdout().write(buf.as_bytes()).is_err() {
             self.isatty = false;
-            return
+            return;
         }
         if std::io::stdout().flush().is_err() {
             self.isatty = false;
-            return
+            return;
         }
     }
 }
@@ -126,12 +138,13 @@ async fn main() -> anyhow::Result<()> {
         .context("Cannot read works file")?
         .lines()
         .filter_map(|line| {
-            if let Ok(work_id) = serde_json::from_str(line){
+            if let Ok(work_id) = serde_json::from_str(line) {
                 Some(work_id)
             } else if let Ok(id) = line.parse::<usize>() {
                 Some(ao3::WorkId::Bare(id))
             } else if let Some(captures) = _work_regex.captures(line) {
-                captures.get(1)?
+                captures
+                    .get(1)?
                     .as_str()
                     .parse::<usize>()
                     .ok()
@@ -144,14 +157,20 @@ async fn main() -> anyhow::Result<()> {
 
     log::trace!("Detected {} works", raw_work_ids.len());
 
-    let (with_timestamps, without_timestamps): (Vec<WorkId>, Vec<WorkId>) = raw_work_ids.iter().partition(|work_id| {
-        match work_id {
+    let (with_timestamps, without_timestamps): (Vec<WorkId>, Vec<WorkId>) =
+        raw_work_ids.iter().partition(|work_id| match work_id {
             ao3::WorkId::Bare(_) => false,
-            ao3::WorkId::WithTimestamp { id: _, timestamp: _ } => true,
-        }
-    });
+            ao3::WorkId::WithTimestamp {
+                id: _,
+                timestamp: _,
+            } => true,
+        });
 
-    log::trace!("Detected {} work(s) with timestamps and {} work(s) without timestamps", with_timestamps.len(), without_timestamps.len());
+    log::trace!(
+        "Detected {} work(s) with timestamps and {} work(s) without timestamps",
+        with_timestamps.len(),
+        without_timestamps.len()
+    );
 
     let mut matched_ids = HashSet::<usize>::new();
     let mut work_ids = Vec::<ao3::WorkId>::new();
@@ -182,22 +201,20 @@ async fn main() -> anyhow::Result<()> {
             std::io::stdin().read_line(&mut tmp).unwrap();
             tmp.pop(); // the newline
             tmp
-        },
+        }
         Err(env::VarError::NotUnicode(_)) => {
             log::error!("Found USERNAME env var, but the contents were not valid Unicode!");
             process::exit(1);
-        },
+        }
     };
 
     let password = match env::var("PASSWORD") {
         Ok(p) => p,
-        Err(env::VarError::NotPresent) => {
-            rpassword::prompt_password("Password? ").unwrap()
-        },
+        Err(env::VarError::NotPresent) => rpassword::prompt_password("Password? ").unwrap(),
         Err(env::VarError::NotUnicode(_)) => {
             log::error!("Found PASSWORD env var, but the contents were not valid Unicode!");
             process::exit(1);
-        },
+        }
     };
 
     log::debug!("Got username and password");
@@ -227,13 +244,12 @@ async fn main() -> anyhow::Result<()> {
     for work in work_ids {
         let res = download_work(&client, &work)
             .await
-            .with_context(|| { format!("Cannot download work with ID {}", &work.id()) });
+            .with_context(|| format!("Cannot download work with ID {}", &work.id()));
 
         if let Err(e) = res {
-            let msg = e.chain()
-                .map(|link| {
-                    link.to_string()
-                })
+            let msg = e
+                .chain()
+                .map(|link| link.to_string())
                 .collect::<Vec<String>>()
                 .join(", because ");
             log::warn!("{}", msg);
@@ -245,15 +261,20 @@ async fn main() -> anyhow::Result<()> {
     pb.end();
 
     if !failed_work_ids.is_empty() {
-        log::warn!("Failed to download a total of {} work(s)", failed_work_ids.len());
+        log::warn!(
+            "Failed to download a total of {} work(s)",
+            failed_work_ids.len()
+        );
 
-        fs::write("failed-works.txt",
+        fs::write(
+            "failed-works.txt",
             failed_work_ids
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<String>>()
-                .join("\n"))
-            .context("Cannot write list of works that failed to download to failed-works.txt")?;
+                .join("\n"),
+        )
+        .context("Cannot write list of works that failed to download to failed-works.txt")?;
 
         log::info!("IDs of failing-to-download works written to failed-works.txt");
     }
@@ -281,19 +302,26 @@ async fn download_work(client: &reqwest::Client, work: &ao3::WorkId) -> anyhow::
 
     let mut file_path = match extractor::title(&mut zipped_epub) {
         Ok(title) => {
-            log::info!("Extracted title '{}' for work with ID {}", &title, work.id());
+            log::info!(
+                "Extracted title '{}' for work with ID {}",
+                &title,
+                work.id()
+            );
             format!("{} [ao3 {}].epub", title, work.id())
-        },
+        }
         Err(e) => {
-            let msg = e.chain()
-                .map(|link| {
-                    link.to_string()
-                })
+            let msg = e
+                .chain()
+                .map(|link| link.to_string())
                 .collect::<Vec<String>>()
                 .join(", because ");
-            log::warn!("Could not extract title for fic with ID {}, because {}", work.id(), msg);
+            log::warn!(
+                "Could not extract title for fic with ID {}, because {}",
+                work.id(),
+                msg
+            );
             format!("[ao3 {}].epub", work.id())
-        },
+        }
     };
 
     let presanitized_len = file_path.len();
@@ -306,8 +334,7 @@ async fn download_work(client: &reqwest::Client, work: &ao3::WorkId) -> anyhow::
 
     log::debug!("Extracting work to path '{}'", &file_path);
 
-    extractor::unzip_to(&mut zipped_epub, &file_path)
-        .context("Could not unzip EPUB")?;
+    extractor::unzip_to(&mut zipped_epub, &file_path).context("Could not unzip EPUB")?;
 
     log::info!("Successfully extracted work to path '{}'", &file_path);
 

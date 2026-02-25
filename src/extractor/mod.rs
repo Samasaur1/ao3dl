@@ -1,4 +1,8 @@
-use std::{fmt, io::{self, Read, Seek}, path};
+use std::{
+    fmt,
+    io::{self, Read, Seek},
+    path,
+};
 
 use anyhow::Context;
 use zip::ZipArchive;
@@ -13,7 +17,7 @@ impl fmt::Display for Error {
         match self {
             Self::TitleAttributeMissing => {
                 return write!(f, "Missing 'dc:title' tag in content.opf");
-            },
+            }
         }
     }
 }
@@ -22,8 +26,7 @@ impl std::error::Error for Error {}
 
 pub fn as_zip(bytes: bytes::Bytes) -> anyhow::Result<ZipArchive<impl Read + Seek>> {
     let wrapped = io::Cursor::new(bytes);
-    let zip = zip::ZipArchive::new(wrapped)
-        .context("Could not create ZipArchive from bytes")?;
+    let zip = zip::ZipArchive::new(wrapped).context("Could not create ZipArchive from bytes")?;
     Ok(zip)
 }
 
@@ -46,9 +49,7 @@ pub fn title(zipped_epub: &mut ZipArchive<impl Read + Seek>) -> anyhow::Result<S
 
     loop {
         match nsr.read_event()? {
-            quick_xml::events::Event::Eof => {
-                return Err(Error::TitleAttributeMissing.into())
-            },
+            quick_xml::events::Event::Eof => return Err(Error::TitleAttributeMissing.into()),
             quick_xml::events::Event::Start(tag) => {
                 // log::trace!(target: "ao3dl::extractor::verbose_xml", "Found XML tag {:?}", tag.name().as_ref());
                 if tag.name().as_ref() == b"dc:title" {
@@ -56,15 +57,18 @@ pub fn title(zipped_epub: &mut ZipArchive<impl Read + Seek>) -> anyhow::Result<S
                     let title = nsr.read_text(tag.name())?;
                     return Ok(title.to_string());
                 };
-            },
+            }
             _ => {
                 continue;
-            },
+            }
         }
     }
 }
 
-pub fn unzip_to<P: AsRef<path::Path>>(zipped_epub: &mut ZipArchive<impl Read + Seek>, dest: P) -> anyhow::Result<()> {
+pub fn unzip_to<P: AsRef<path::Path>>(
+    zipped_epub: &mut ZipArchive<impl Read + Seek>,
+    dest: P,
+) -> anyhow::Result<()> {
     zipped_epub
         .extract(dest)
         .context("Cannot extract zipped EPUB to directory")?;
