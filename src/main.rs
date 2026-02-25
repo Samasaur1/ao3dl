@@ -4,6 +4,8 @@ use anyhow::Context;
 use clap::Parser;
 use regex::Regex;
 
+use crate::ao3::WorkId;
+
 mod ao3;
 mod extractor;
 
@@ -120,22 +122,49 @@ async fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
     let _work_regex = Regex::new(r"https://archiveofourown\.org/works/(\d+)").unwrap();
-    let work_ids = fs::read_to_string(args.works_file)
+    let raw_work_ids = fs::read_to_string(args.works_file)
         .context("Cannot read works file")?
         .lines()
         .filter_map(|line| {
-            if let Ok(id) = line.parse::<usize>() {
-                Some(id)
+            if let Ok(work_id) = serde_json::from_str(line){
+                Some(work_id)
+            } else if let Ok(id) = line.parse::<usize>() {
+                Some(ao3::WorkId::Bare(id))
             } else if let Some(captures) = _work_regex.captures(line) {
                 captures.get(1)?
                     .as_str()
                     .parse::<usize>()
                     .ok()
+                    .map(|id| ao3::WorkId::Bare(id))
             } else {
                 None
             }
         })
-        .collect::<HashSet<_>>();
+        .collect::<Vec<_>>();
+
+    log::trace!("Detected {} works", raw_work_ids.len());
+
+    let (with_timestamps, without_timestamps): (Vec<WorkId>, Vec<WorkId>) = raw_work_ids.iter().partition(|work_id| {
+        match work_id {
+            ao3::WorkId::Bare(_) => false,
+            ao3::WorkId::WithTimestamp { id: _, timestamp: _ } => true,
+        }
+    });
+
+    log::trace!("Detected {} work(s) with timestamps and {} work(s) without timestamps", with_timestamps.len(), without_timestamps.len());
+
+    let mut matched_ids = HashSet::<usize>::new();
+    let mut work_ids = Vec::<ao3::WorkId>::new();
+    for work in with_timestamps.iter().chain(without_timestamps.iter()) {
+        if matched_ids.insert(*work.id()) {
+            // New to the set, add to the final list
+            work_ids.push(*work);
+        } else {
+            // Already in the set, skip
+            log::trace!("Found duplicate ID {}", work.id());
+            continue;
+        }
+    }
 
     log::info!("Detected {} works", work_ids.len());
 
@@ -195,10 +224,10 @@ async fn main() -> anyhow::Result<()> {
     let mut failed_work_ids = HashSet::<usize>::new();
 
     pb.begin();
-    for id in work_ids {
-        let res = download_work(&client, &id)
+    for work in work_ids {
+        let res = download_work(&client, &work)
             .await
-            .with_context(|| { format!("Cannot download work with ID {}", &id) });
+            .with_context(|| { format!("Cannot download work with ID {}", &work.id()) });
 
         if let Err(e) = res {
             let msg = e.chain()
@@ -208,7 +237,7 @@ async fn main() -> anyhow::Result<()> {
                 .collect::<Vec<String>>()
                 .join(", because ");
             log::warn!("{}", msg);
-            failed_work_ids.insert(id);
+            failed_work_ids.insert(*work.id());
         };
 
         pb.next();
@@ -232,14 +261,14 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn download_work(client: &reqwest::Client, work_id: &usize) -> anyhow::Result<()> {
-    log::debug!("Attempting to download work with ID {}", work_id);
+async fn download_work(client: &reqwest::Client, work: &ao3::WorkId) -> anyhow::Result<()> {
+    log::debug!("Attempting to download work with ID {}", work.id());
 
-    let bytes = ao3::download(&client, &work_id)
+    let bytes = ao3::download(&client, &work)
         .await
         .context("Could not download data")?;
 
-    log::info!("Successfully downloaded work with ID {}", work_id);
+    log::info!("Successfully downloaded work with ID {}", work.id());
 
     log::debug!("Attempting to parse download as ZIP");
 
@@ -248,12 +277,12 @@ async fn download_work(client: &reqwest::Client, work_id: &usize) -> anyhow::Res
 
     log::info!("Successfully parsed download as ZIP");
 
-    log::debug!("Attempting to extract title of work with ID {}", work_id);
+    log::debug!("Attempting to extract title of work with ID {}", work.id());
 
     let mut file_path = match extractor::title(&mut zipped_epub) {
         Ok(title) => {
-            log::info!("Extracted title '{}' for work with ID {}", &title, work_id);
-            format!("{} [ao3 {}].epub", title, work_id)
+            log::info!("Extracted title '{}' for work with ID {}", &title, work.id());
+            format!("{} [ao3 {}].epub", title, work.id())
         },
         Err(e) => {
             let msg = e.chain()
@@ -262,8 +291,8 @@ async fn download_work(client: &reqwest::Client, work_id: &usize) -> anyhow::Res
                 })
                 .collect::<Vec<String>>()
                 .join(", because ");
-            log::warn!("Could not extract title for fic with ID {}, because {}", work_id, msg);
-            format!("[ao3 {}].epub", work_id)
+            log::warn!("Could not extract title for fic with ID {}, because {}", work.id(), msg);
+            format!("[ao3 {}].epub", work.id())
         },
     };
 
