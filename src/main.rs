@@ -18,6 +18,8 @@ mod extractor;
 #[derive(Parser)]
 struct Cli {
     works_file: PathBuf,
+    #[arg(long)]
+    unzip_epubs: bool,
 }
 
 struct ProgressBar {
@@ -242,7 +244,7 @@ async fn main() -> anyhow::Result<()> {
 
     pb.begin();
     for work in work_ids {
-        let res = download_work(&client, &work)
+        let res = download_work(&client, &work, args.unzip_epubs)
             .await
             .with_context(|| format!("Cannot download work with ID {}", &work.id()));
 
@@ -282,7 +284,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn download_work(client: &reqwest::Client, work: &ao3::WorkId) -> anyhow::Result<()> {
+async fn download_work(client: &reqwest::Client, work: &ao3::WorkId, unzip: bool) -> anyhow::Result<()> {
     log::debug!("Attempting to download work with ID {}", work.id());
 
     let bytes = ao3::download(&client, &work)
@@ -293,7 +295,7 @@ async fn download_work(client: &reqwest::Client, work: &ao3::WorkId) -> anyhow::
 
     log::debug!("Attempting to parse download as ZIP");
 
-    let mut zipped_epub = extractor::as_zip(bytes)
+    let mut zipped_epub = extractor::as_zip(&bytes)
         .context("Could not parse download as ZIP (this may happen for hidden works)")?;
 
     log::info!("Successfully parsed download as ZIP");
@@ -332,11 +334,19 @@ async fn download_work(client: &reqwest::Client, work: &ao3::WorkId) -> anyhow::
     }
     let file_path = file_path; // make non-mut
 
-    log::debug!("Extracting work to path '{}'", &file_path);
+    if unzip {
+        log::debug!("Extracting work to path '{}'", &file_path);
 
-    extractor::unzip_to(&mut zipped_epub, &file_path).context("Could not unzip EPUB")?;
+        extractor::unzip_to(&mut zipped_epub, &file_path).context("Could not unzip EPUB")?;
 
-    log::info!("Successfully extracted work to path '{}'", &file_path);
+        log::info!("Successfully extracted work to path '{}'", &file_path);
+    } else {
+        log::debug!("Saving work to path '{}'", &file_path);
+
+        fs::write(&file_path, &bytes)?;
+
+        log::info!("Successfully saved work to path '{}'", &file_path);
+    }
 
     Ok(())
 }

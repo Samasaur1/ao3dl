@@ -24,7 +24,7 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-pub fn as_zip(bytes: bytes::Bytes) -> anyhow::Result<ZipArchive<impl Read + Seek>> {
+pub fn as_zip(bytes: &bytes::Bytes) -> anyhow::Result<ZipArchive<impl Read + Seek>> {
     let wrapped = io::Cursor::new(bytes);
     let zip = zip::ZipArchive::new(wrapped).context("Could not create ZipArchive from bytes")?;
     Ok(zip)
