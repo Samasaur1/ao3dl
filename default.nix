@@ -17,7 +17,7 @@ in
       openssl
     ];
 
-    cargoHash = "sha256-Ftskdt/mbP+cGx4yvo8Nb5U74xbhG3EXMQeGDk37csA=";
+    cargoHash = "sha256-DveCBht/BKaNcfj/WAcOjOUAkFuiHDTy2T4r9ur1VWQ=";
 
     meta = {
       mainProgram = "ao3dl";
