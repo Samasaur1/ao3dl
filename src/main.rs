@@ -328,12 +328,15 @@ async fn main() -> anyhow::Result<()> {
             failed_work_ids.len()
         );
 
+        // Sort failed works before writing so that the file is diffable if you rerun ao3dl on it
+        let mut failed_works = failed_work_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<String>>();
+        failed_works.sort();
         fs::write(
             "failed-works.txt",
-            failed_work_ids
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<String>>()
+            failed_works
                 .join("\n"),
         )
         .context("Cannot write list of works that failed to download to failed-works.txt")?;
