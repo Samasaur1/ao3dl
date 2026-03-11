@@ -55,6 +55,7 @@ struct ProgressBar {
     isatty: bool,
     current: usize,
     max: usize,
+    error: bool,
 }
 
 impl ProgressBar {
@@ -63,6 +64,7 @@ impl ProgressBar {
             isatty: std::io::stdout().is_terminal(),
             current: 0,
             max: max,
+            error: false,
         }
     }
 
@@ -87,7 +89,7 @@ impl ProgressBar {
             return;
         }
         let buf = if going {
-            format!("\x1b]9;4;1;{}\x07", pct)
+            format!("\x1b]9;4;{state};{pct}\x07", state = if self.error { 2 } else { 1 })
         } else {
             "\x1b]9;4;0\x07".to_string()
         };
@@ -291,6 +293,7 @@ async fn main() -> anyhow::Result<()> {
             match res {
                 Ok(_) => {
                     formats_left -= 1;
+                    pb.error = false;
                     pb.next();
                 }
                 Err(e) => {
@@ -313,6 +316,7 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     for _ in 0..formats_left {
+                        pb.error = true;
                         pb.next();
                     }
                     break;
