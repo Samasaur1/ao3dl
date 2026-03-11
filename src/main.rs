@@ -280,6 +280,7 @@ async fn main() -> anyhow::Result<()> {
     let mut failed_work_ids = HashSet::<usize>::new();
 
     pb.begin();
+    pb.next();
     for work in work_ids {
         let mut formats_left = args.formats.len();
 
