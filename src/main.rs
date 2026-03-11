@@ -312,7 +312,7 @@ async fn main() -> anyhow::Result<()> {
                             log::warn!("Skipping {} remaining formats", formats_left - 1);
                         }
                     }
-                    for _ in 1..formats_left {
+                    for _ in 0..formats_left {
                         pb.next();
                     }
                     break;
