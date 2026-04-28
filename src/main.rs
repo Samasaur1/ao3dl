@@ -334,17 +334,8 @@ async fn main() -> anyhow::Result<()> {
         );
 
         // Sort failed works before writing so that the file is diffable if you rerun ao3dl on it
-        let mut failed_works = failed_work_ids
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<String>>();
-        failed_works.sort();
-        fs::write(
-            "failed-works.txt",
-            failed_works
-                .join("\n"),
-        )
-        .context("Cannot write list of works that failed to download to failed-works.txt")?;
+        write_lines_sorted(&failed_work_ids, "failed-works.txt")
+            .context("Cannot write list of works that failed to download to failed-works.txt")?;
 
         log::info!("IDs of failing-to-download works written to failed-works.txt");
     }
@@ -550,4 +541,19 @@ async fn download_work(
             Ok(())
         }
     }
+}
+
+fn write_lines_sorted(set: &HashSet<usize>, path: &'static str) -> anyhow::Result<()> {
+    let mut arr = set.iter().collect::<Vec<&usize>>();
+    arr.sort();
+    let file = std::fs::File::create(path)
+        .context(format!("Cannot create file at path {}", path))?;
+    let mut writer = std::io::BufWriter::new(file);
+    for item in arr {
+        writeln!(writer, "{}", item)
+            .context("Failed to write line to file")?;
+    }
+    writer.flush()
+        .context("Failed to flush file")?;
+    Ok(())
 }
