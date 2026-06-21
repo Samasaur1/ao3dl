@@ -61,7 +61,10 @@ async fn execute_with_retries(
                             }
                         }
                         _ => {
-                            bail!("HTTP 429 Too Many Requests without Retry-After header");
+                            exponential_delay *= DELAY_SCALING_FACTOR;
+                            log::trace!(target: "ao3dl::ao3::retrier", "Missing Retry-After header, sleeping {} secs", exponential_delay);
+                            tokio::time::sleep(time::Duration::from_secs_f64(exponential_delay)).await;
+                            continue;
                         }
                     }
                 } else if code.is_server_error() {
