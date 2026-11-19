@@ -1,4 +1,4 @@
-{ lib, rustPlatform, pkg-config, openssl }:
+{ lib, rustPlatform, pkg-config, openssl, zstd }:
 
 let
   cargoToml = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package;
@@ -15,6 +15,7 @@ in
 
     buildInputs = [
       openssl
+      zstd
     ];
 
     cargoHash = "sha256-1JXkiiFZIALI6MD1tccFm2uG5GdaZ9aA4Yx3EPM1AnA=";
